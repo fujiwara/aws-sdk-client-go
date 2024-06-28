@@ -235,6 +235,33 @@ $ awslim ecs DescribeClusters my.jsonnet
 
 **Note**: By default, the input JSON is unmarshaled strictly. Unknown fields for the input struct in the input JSON cause an error. If you want to unmarshal the input JSON non-strictly, use `--no-strict` option.
 
+#### Jsonnet functions
+
+awslim supports Jsonnet functions for the input JSON.
+
+```console
+$ awslim ecs describe-clusters '{Cluster: _(0)}' foo
+
+$ CLUSTER=foo awslim ecs describe-clusters '{Cluster: env("CLUSTER","default")}'
+
+$ CLUSTER=foo awslim ecs describe-clusters '{Cluster: must_env("CLUSTER")}'
+```
+
+- `_(n)` returns the n-th argument.
+- `env(n, d)` returns the environment variable `n`. If the environment variable is not set, it returns `d`.
+- `must_env(n)` returns the environment variable `n`. If the environment variable is not set, it causes an error.
+
+When you specify the input JSON as a file, you must define the function in the Jsonnet file.
+
+```jsonnet
+local _ = std.native('args');
+local env = std.native('env');
+local must_env = std.native('must_env');
+{
+  Cluster: _(0),
+}
+```
+
 #### `--ext-str` and `--ext-code` options
 
 Pass external variables to Jsonnet.

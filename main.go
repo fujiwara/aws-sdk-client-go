@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/google/go-jsonnet"
+	"github.com/google/go-jsonnet/ast"
 	"github.com/jmespath/go-jmespath"
 )
 
@@ -38,9 +39,10 @@ type ClientMethod func(context.Context, *clientMethodParam) (any, error)
 var ErrDryRun = fmt.Errorf("dry-run mode")
 
 type CLI struct {
-	Service string `arg:"" help:"service name" default:""`
-	Method  string `arg:"" help:"method name" default:""`
-	Input   string `arg:"" help:"input JSON/Jsonnet struct or filename" default:"{}"`
+	Service string   `arg:"" help:"service name" default:""`
+	Method  string   `arg:"" help:"method name" default:""`
+	Input   string   `arg:"" help:"input JSON/Jsonnet struct or filename" default:"{}"`
+	Args    []string `arg:"" optional:"" help:"additional arguments"`
 
 	InputStream  string            `short:"i" help:"bind input filename or '-' to io.Reader field in the input struct"`
 	OutputStream string            `short:"o" help:"bind output filename or '-' to io.ReadCloser field in the output struct"`
@@ -84,6 +86,7 @@ func Run(ctx context.Context) error {
 	if _, err := k.Parse(args); err != nil {
 		return err
 	}
+	slog.Debug("extra args", "args", c.Args)
 
 	return c.Dispatch(ctx)
 }
@@ -212,9 +215,12 @@ func (c *CLI) loadInput(_ context.Context) ([]byte, error) {
 	for k, v := range c.ExtCode {
 		vm.ExtCode(k, v)
 	}
+	def := c.setNativeFuncs(vm)
 	if strings.HasPrefix(c.Input, "{") {
 		// string is JSON or Jsonnet
-		s, err := vm.EvaluateAnonymousSnippet("input", c.Input)
+		in := def + c.Input
+		slog.Debug("evaluate Jsonnet", "input", in)
+		s, err := vm.EvaluateAnonymousSnippet("input", in)
 		if err != nil {
 			return nil, fmt.Errorf("failed to evaluate Jsonnet: %w", err)
 		}
@@ -319,6 +325,45 @@ func (c *CLI) ListServices(_ context.Context) error {
 		fmt.Fprintln(c.w, name)
 	}
 	return nil
+}
+
+func (c *CLI) setNativeFuncs(vm *jsonnet.VM) string {
+	vm.NativeFunction(&jsonnet.NativeFunction{
+		Name:   "args",
+		Params: []ast.Identifier{"n"},
+		Func: func(args []interface{}) (interface{}, error) {
+			n := args[0].(float64)
+			return c.Args[int(n)], nil
+		},
+	})
+	vm.NativeFunction(&jsonnet.NativeFunction{
+		Name:   "env",
+		Params: []ast.Identifier{"name", "default"},
+		Func: func(args []interface{}) (interface{}, error) {
+			name := args[0].(string)
+			def := args[1].(string)
+			if v, ok := os.LookupEnv(name); ok {
+				return v, nil
+			}
+			return def, nil
+		},
+	})
+	vm.NativeFunction(&jsonnet.NativeFunction{
+		Name:   "must_env",
+		Params: []ast.Identifier{"name"},
+		Func: func(args []interface{}) (interface{}, error) {
+			name := args[0].(string)
+			if v, ok := os.LookupEnv(name); ok {
+				return v, nil
+			}
+			return nil, fmt.Errorf("environment variable %s is not set", name)
+		},
+	})
+	return `
+	local _ = std.native('args');
+	local env = std.native('env');
+	local must_env = std.native('must_env');
+	`
 }
 
 func buildKey(service, method string) string {
